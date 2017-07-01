@@ -57,6 +57,10 @@
 #define CLR_CYAN    "\x1b[36m"
 #define CLR_CLEAR   "\x1b[0m"
 
+#define PLAY_MODE_NORMAL 0
+#define PLAY_MODE_RANDOM 1
+#define PLAY_MODE_SINGLE 2
+
 const char *HELP =
         "Commands:\n"
                 "help - Prinst this help\n"
@@ -78,27 +82,34 @@ const char *logo =
                 "                                                         |_|               |___/             ";
 
 char **song_library;
-
+int play_mode = PLAY_MODE_NORMAL;
 int file_count = 0;
 int new_files = 0;
 int volume = 75;
 int last_sel = 0;
 GstElement *pipeline = NULL;
-
+GMainLoop *g_main_loop = NULL;
+pthread_t gobj_thread;
+guint bus_watch_id;
+char *now_playing = NULL;
 
 void parse_args(int argc, char **argv);
 
 void free_pipeline_if_needed();
 
-void play_file(char *play);
+void play_file(char *play, int print_info);
 
 void set_volume();
+
+void set_next_song();
+
+void set_prev_song();
 
 void pause_playback();
 
 void resume_playback();
 
-void play_last_sel();
+void play_last_sel(int print_info);
 
 int add_entry(const char *filepath);
 
@@ -116,10 +127,51 @@ char *read_in();
 
 void player_interface();
 
+/**
+ * Checks if params contain only -v or --version
+ * @param argc argument count
+ * @param argv arguments
+ * @return if was only -v or --version
+ */
 int only_version(int argc, char **argv) {
     return argc == 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0);
 }
 
+/**
+ * Print gstreamers linked info
+ */
+void print_gstream_info() {
+    const gchar *nano_str;
+    guint major, minor, micro, nano;
+    gst_version(&major, &minor, &micro, &nano);
+    switch (nano) {
+        case 1:
+            nano_str = "(CVS)";
+            break;
+        case 2:
+            nano_str = "(Prerelease)";
+            break;
+        default:
+            nano_str = "";
+            break;
+    }
+    printf("GStreamer %d.%d.%d %s\n", major, minor, micro, nano_str);
+}
+
+void *gobj_main_loop_run(void *ptr) {
+    g_main_loop = g_main_loop_new(NULL, FALSE);
+    g_main_loop_run(g_main_loop);
+    printf("Closing down...");
+    g_main_loop_unref(g_main_loop);
+    return 0;
+}
+
+/**
+ * GObject main loop to get bus events to run
+ */
+int start_gobj_thread() {
+    return pthread_create(&gobj_thread, NULL, gobj_main_loop_run, NULL);
+}
 
 int main(int argc, char **argv) {
     if (only_version(argc, argv)) {
@@ -130,7 +182,13 @@ int main(int argc, char **argv) {
                        "Under MIT License\n");
         return 0;
     }
-    printf("%s%s%s\nCopyright (c) Tuomo Heino\nVersion 1.0\n\n", CLR_CYAN, logo, CLR_CLEAR);
+    printf("%s%s%s\nCopyright (c) Tuomo Heino\nVersion 1.0\n", CLR_CYAN, logo, CLR_CLEAR);
+    time_t t;
+    srand((unsigned) time(&t));
+    gst_init(NULL, NULL);
+    print_gstream_info();
+    printf("\n");
+
     song_library = malloc((file_count + 1) * sizeof(char *));
     if (song_library == NULL) {
         printf("Malloc failed exiting!");
@@ -138,13 +196,22 @@ int main(int argc, char **argv) {
     }
 
     parse_args(argc, argv);
-    gst_init(&argc, &argv);
 
     if (argc == 1) {
         printf("Use scan command to add songs!\nType help for more commands\n");
     }
+    if (start_gobj_thread() != 0) {
+        printf("Unable to start gobject main loop.");
+        return EXIT_FAILURE;
+    }
     player_interface();
     free_pipeline_if_needed();
+    if (g_main_loop != NULL) {
+        // Quit main loop
+        g_main_loop_quit(g_main_loop);
+    }
+    pthread_join(gobj_thread, NULL);
+    // BB library
     free(song_library);
     return EXIT_SUCCESS;
 }
@@ -173,8 +240,10 @@ void parse_args(int argc, char **argv) {
 
 void free_pipeline_if_needed() {
     if (pipeline != NULL) {
+        now_playing = NULL;
         gst_element_set_state(pipeline, GST_STATE_NULL);
         gst_object_unref(pipeline);
+        g_source_remove(bus_watch_id);
         pipeline = NULL;
     }
 }
@@ -183,6 +252,40 @@ void set_volume() {
     if (pipeline != NULL) {
         double set_vol = volume / 100.0;
         g_object_set(pipeline, "volume", set_vol, NULL);
+    }
+}
+
+int get_rnd_int(int max) {
+    return rand() % max;
+}
+
+void set_next_song() {
+    switch (play_mode) {
+        case PLAY_MODE_RANDOM:
+            last_sel = get_rnd_int(file_count);
+            break;
+        case PLAY_MODE_SINGLE:
+            // Nothing to do
+            break;
+        case PLAY_MODE_NORMAL:
+        default:
+            last_sel++;
+            break;
+    }
+}
+
+void set_prev_song() {
+    switch (play_mode) {
+        case PLAY_MODE_RANDOM:
+            last_sel = get_rnd_int(file_count);
+            break;
+        case PLAY_MODE_SINGLE:
+            // Nothing to do
+            break;
+        case PLAY_MODE_NORMAL:
+        default:
+            last_sel--;
+            break;
     }
 }
 
@@ -198,7 +301,7 @@ void resume_playback() {
     }
 }
 
-void play_last_sel() {
+void play_last_sel(int print_info) {
     if (last_sel >= file_count) {
         last_sel = 0;
     }
@@ -207,7 +310,7 @@ void play_last_sel() {
     }
     char *resolved = 0;
     char *play = realpath(song_library[last_sel], resolved);
-    play_file(play);
+    play_file(play, print_info);
 }
 
 int add_entry(const char *filepath) {
@@ -258,16 +361,18 @@ int walk_dir_tree(const char *const dirpath) {
 
 gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer data) {
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
-        last_sel++;
-        play_last_sel();
+        set_next_song();
+        play_last_sel(FALSE);
     }
     return TRUE;
 }
 
-void play_file(char *play) {
+void play_file(char *play, int print_info) {
     assert(play != NULL);
-    char* base = basename(play);
-    printf("%sPlaying: %s%s\n", CLR_GREEN, base, CLR_CLEAR);
+    char *base = basename(play);
+    if (print_info) {
+        printf("%sPlaying: %s%s\n", CLR_GREEN, base, CLR_CLEAR);
+    }
     char *play_bin = "playbin uri=\"file://";
     char *esc = "\"";
     char *play_file = malloc(strlen(play_bin) + strlen(play) + strlen(esc) + 1);
@@ -277,8 +382,13 @@ void play_file(char *play) {
     strcat(play_file, esc);
 
     free_pipeline_if_needed();
+    now_playing = base;
     pipeline = gst_parse_launch(play_file, NULL);
     free(play_file);
+
+    GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE (pipeline));
+    bus_watch_id = gst_bus_add_watch(bus, bus_callback, NULL);
+    gst_object_unref(bus);
 
     /* Start playing */
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
@@ -370,7 +480,7 @@ void player_interface() {
                     last_sel = song;
                     char *resolved = 0;
                     char *play = realpath(song_library[song], resolved);
-                    play_file(play);
+                    play_file(play, TRUE);
                 }
             }
             if (cmd_read && strcmp(input, "stop") == 0) {
@@ -383,8 +493,8 @@ void player_interface() {
                     printf("No songs to play!\n");
                     continue;
                 }
-                last_sel++;
-                play_last_sel();
+                set_next_song();
+                play_last_sel(TRUE);
             }
             if (cmd_read && strcmp(input, "prev") == 0) {
                 cmd_read = 0;
@@ -392,8 +502,8 @@ void player_interface() {
                     printf("No songs to play!\n");
                     continue;
                 }
-                last_sel--;
-                play_last_sel();
+                set_prev_song();
+                play_last_sel(TRUE);
             }
             if (cmd_read && strcmp(input, "pause") == 0) {
                 cmd_read = 0;
@@ -402,6 +512,46 @@ void player_interface() {
             if (cmd_read && strcmp(input, "resume") == 0) {
                 cmd_read = 0;
                 resume_playback();
+            }
+            if (cmd_read && strcmp(input, "now") == 0) {
+                cmd_read = 0;
+                if (file_count == 0 || now_playing == NULL) {
+                    printf("No song playing!\n");
+                    continue;
+                }
+                printf("%sPlaying: %s%s\n", CLR_GREEN, now_playing, CLR_CLEAR);
+            }
+            if(cmd_read && strcmp(input, "normal") == 0) {
+                cmd_read = 0;
+                play_mode = PLAY_MODE_NORMAL;
+                printf("Playback mode set to 'Normal'\n");
+            }
+            if(cmd_read && strcmp(input, "random") == 0) {
+                cmd_read = 0;
+                play_mode = PLAY_MODE_RANDOM;
+                printf("Playback mode set to 'Random'\n");
+            }
+            if(cmd_read && strcmp(input, "single") == 0) {
+                cmd_read = 0;
+                play_mode = PLAY_MODE_SINGLE;
+                printf("Playback mode set to 'Single'\n");
+            }
+            if (cmd_read && strcmp(input, "mode") == 0) {
+                cmd_read = 0;
+                char *mode;
+                switch (play_mode) {
+                    case PLAY_MODE_RANDOM:
+                        mode = "Random";
+                        break;
+                    case PLAY_MODE_SINGLE:
+                        mode = "Single";
+                        break;
+                    case PLAY_MODE_NORMAL:
+                    default:
+                        mode = "Normal";
+                        break;
+                }
+                printf("Playback mode: %s\n", mode);
             }
             if (cmd_read) {
                 printf("%sUnrecognized command %s'%s%s%s'\n", CLR_RED, CLR_CLEAR, CLR_MAGENTA, input, CLR_CLEAR);

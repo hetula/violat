@@ -5,6 +5,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/)
 set(CMAKE_C_STANDARD 11)
 SET(CMAKE_C_FLAGS_DISTRIBUTION "-Ofast")
 
+find_package (Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 # Gstreamer
@@ -17,5 +18,6 @@ include_directories(${GOBJECT_INCLUDE_DIR})
 
 set(SOURCE_FILES src/violat.c)
 add_executable(violat ${SOURCE_FILES})
+target_link_libraries(violat ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(violat ${GSTREAMER_LIBRARIES})
 target_link_libraries(violat ${GOBJECT_LIBRARIES})
