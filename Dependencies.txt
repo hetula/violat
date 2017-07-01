@@ -1,0 +1,5 @@
+gstreamer1.0
+gstreamer1.0-plugins
+pulseaudio(should come with gstreamer)
+libgobject(glib-2.0)
+clang >= 3.8 (using 4.0)
