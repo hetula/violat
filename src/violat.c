@@ -176,7 +176,7 @@ extern inline void print_gstream_info() {
 void *gobj_main_loop_run(void *ptr) {
     g_main_loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(g_main_loop);
-    printf("Closing down...");
+    printf("Closing down...\n");
     g_main_loop_unref(g_main_loop);
     return 0;
 }
@@ -383,15 +383,27 @@ gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer data) {
     return TRUE;
 }
 
+void send_notify(char *song) {
+    size_t length = strlen(song);
+    char command[length + 96];
+    strcpy(command, "notify-send -i dialog-information -t 2500 -u low --hint=int:transient:1 Playing \"");
+    strcat(command, song);
+    strcat(command, "\"\0");
+
+    system(command);
+}
+
 void play_file(char *play, int print_info) {
     assert(play != NULL);
     char *base = basename(play);
     if (print_info) {
         printf("%sPlaying: %s%s\n", CLR_GREEN, base, CLR_CLEAR);
     }
+    send_notify(base);
+
     char *play_bin = "playbin uri=\"file://";
     char *esc = "\"";
-    char *play_file = malloc(strlen(play_bin) + strlen(play) + strlen(esc) + 1);
+    char play_file[strlen(play_bin) + strlen(play) + strlen(esc) + 1];
 
     strcpy(play_file, play_bin);
     strcat(play_file, play);
@@ -400,7 +412,6 @@ void play_file(char *play, int print_info) {
     free_pipeline_if_needed();
     now_playing = base;
     pipeline = gst_parse_launch(play_file, NULL);
-    free(play_file);
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE (pipeline));
     bus_watch_id = gst_bus_add_watch(bus, bus_callback, NULL);
