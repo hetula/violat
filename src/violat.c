@@ -68,6 +68,7 @@ const char *HELP =
         "\x1b[32;1mCommands:\x1b[0m\n"
                 "\x1b[34;1mhelp\x1b[0m   - Prints this help\n"
                 "\x1b[34;1mscan\x1b[0m   - Scan new songs in to library\n"
+                "\x1b[34;1mclear\x1b[0m  - Clear terminal\n"
                 "\x1b[34;1mvol\x1b[0m    - Change volume\n"
                 "\n"
                 "\x1b[34;1mplay\x1b[0m   - Play song\n"
@@ -173,6 +174,10 @@ extern inline void print_gstream_info() {
     printf("GStreamer %d.%d.%d %s\n", major, minor, micro, nano_str);
 }
 
+extern inline void clear_console() {
+    printf("\033[H\033[J");
+}
+
 void *gobj_main_loop_run(void *ptr) {
     g_main_loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(g_main_loop);
@@ -198,8 +203,12 @@ int main(int argc, char **argv) {
         return 0;
     }
     printf("%s%s%s\nCopyright (c) Tuomo Heino\nVersion 1.0\n", CLR_CYAN, logo, CLR_CLEAR);
-    time_t t;
-    srand((unsigned) time(&t));
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) == 0) {
+        printf("Unable to seed random\n");
+        return EXIT_FAILURE;
+    }
+    srandom((unsigned int) (ts.tv_nsec ^ ts.tv_sec));
     gst_init(NULL, NULL);
     print_gstream_info();
     printf("\n");
@@ -272,7 +281,7 @@ void set_volume() {
 }
 
 int get_rnd_int(int max) {
-    return rand() % max;
+    return (int) (random() % max);
 }
 
 void set_next_song() {
@@ -601,6 +610,8 @@ extern inline void player_interface() {
                 chande_mode_cmd(PLAY_MODE_SINGLE);
             } else if (check_command(input, "mode")) {
                 print_mode_cmd();
+            } else if(check_command(input, "clear")) {
+                clear_console();
             } else if (check_command(input, "help")) {
                 printf("%s\n", HELP);
             } else {
