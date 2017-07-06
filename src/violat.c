@@ -194,6 +194,10 @@ extern inline int start_gobj_thread() {
 }
 
 int main(int argc, char **argv) {
+    if(isatty(1) == 0) {
+        printf("Not a tty\n");
+        return EXIT_FAILURE;
+    }
     if (only_version(argc, argv)) {
         printf("Viola Musicplayer\n"
                        "Music player from Terminal using GStreamer\n"
